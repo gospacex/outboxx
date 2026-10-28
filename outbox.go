@@ -42,10 +42,10 @@ import (
 	"time"
 
 	"github.com/gospacex/dbx/orm"
-	otelxprop "github.com/gospacex/otelx/propagation"
 	"github.com/gospacex/logx"
 	"github.com/gospacex/mqx"
 	"github.com/gospacex/otelx/layer"
+	otelxprop "github.com/gospacex/otelx/propagation"
 	"go.opentelemetry.io/otel/attribute"
 	otelprop "go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
@@ -182,6 +182,25 @@ func NewRunner(db *gorm.DB, producer mqx.Producer, logger logx.Logger, cfg Confi
 		logger = logx.GetGlobal()
 	}
 	return &Runner{db: db, producer: producer, logger: logger, cfg: cfg.withDefaults()}
+}
+
+// NewRunnerFromAny 从弱类型句柄构造补发器（db 通常是 App.DB() 的返回值）。
+//
+// 单独开这个入口只有一个理由：让「刻意不直引 gorm」的调用方也能把 outbox 装配
+// 起来。NewRunner 的签名要求具体的 *gorm.DB，调用方为了拿到这个类型就不得不
+// import gorm —— 对 launchx 而言这一步撞它自己的库依赖红线（见
+// launchx/dependency_surface_test.go：库源码不得直引 gorm）。而断言动作放在
+// 本包内部则毫无代价：本包本来就在 gorm 上实现，不会多出任何依赖。
+//
+// 断言失败返回 error 而不是零值 Runner：静默返回 nil 会让「DB 句柄类型不对」
+// 在装配期完全看不出来，攒到运行时才表现为「事件一直发不出去且无人报错」。
+// 注意 %T 打的是动态类型，排查时它能直接告诉你是 nil 还是接错了别的句柄。
+func NewRunnerFromAny(db any, producer mqx.Producer, logger logx.Logger, cfg Config) (*Runner, error) {
+	gdb, ok := db.(*gorm.DB)
+	if !ok || gdb == nil {
+		return nil, fmt.Errorf("outboxx: db handle type %T, want *gorm.DB (unavailable or not assembled?)", db)
+	}
+	return NewRunner(gdb, producer, logger, cfg), nil
 }
 
 // Start 启动轮询补发（幂等；producer 为 nil 时不启动并打 Error）
